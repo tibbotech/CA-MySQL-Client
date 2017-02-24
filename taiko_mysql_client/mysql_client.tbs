@@ -1,0 +1,349 @@
+'----------------Tibbo MySQL Library--------------
+'Created by Ivan Korposh, SCANCODE technology.
+'
+'-------------------Description-------------------
+'
+'This simple library lets you use a Tibbo module as a MySQL client.
+'To start working with your database you need to do the following steps:
+'1. Set up the IP address and TCP/IP port of your MySQL Server.
+'2. Set up default values for the login, password and database name of the MySQL Server
+'You can combine steps 1 and 2 into the sql_init function under "The block of your data"
+'3. Execute the function sql_init() somewhere in your code (on_sys_init would be a good place)
+'4. You're all set! Now you can start working with the database. For example, execute
+'sql_connect("your_login","your_password","your_database")
+'s = sql_request("SELECT NOW()")
+'"s" will contain the current date/time 
+
+'Public functions:
+'sql_connect(lg,pw,db) - connect to MySQL Server. Return "true" or "false"
+'sql_disconnect() - disconnect from MySQL Server
+'sql_query("request") - send request to MySQL Server. Return the result.
+'sql_select_db("DB_NAME") - select another DB on the MySQL Server. Return "true" or "false"
+'sql_init - initialize MySQL settings
+'
+'ATTENTION!
+'--------------------------------------------------
+'The file "mysql_client.tbh" includes MySQL commads (enum sql_commands). This library (version 1.0)
+'implements only one command, "query".
+'In the future we are planing create a library which will allow to work with all MySQL commands.
+'--------------------------------------------------
+include "global.tbh"
+
+dim mysql as mysql_settings_type
+dim mysql_p as mysql_packet_type
+
+public sub sql_init()
+'This public procedure initializes MySql settings and sets up a socket. You need to use it first (before you call other
+'procedures or functions).
+
+'-------The block of your data---------
+	mysql.sql_sock = 0					'Number of socket for MySql client
+	mysql.ip_address = "10.1.1.60"				'ip address of Server MySql
+	mysql.tcpip_port = 3306					'TCP/IP port of Server MySql
+	mysql.username = "admin"				'database Autorization login
+	mysql.password = "admin"				'database Password
+	mysql.db_name = "TEST_DB"				'database Name
+'-------The block of your data---------
+	
+	'Socket for MySql
+	sock.num = mysql.sql_sock
+	sock.protocol = PL_SOCK_PROTOCOL_TCP
+	sock.inconmode = PL_SOCK_INCONMODE_ANY_IP_ANY_PORT
+	sock.gendataarrivalevent=NO
+	sock.localportlist = mysql.tcpip_port
+	sock.targetip = mysql.ip_address
+	sock.targetport = mysql.tcpip_port
+	sock.txbuffrq(2)
+	sock.rxbuffrq(2)
+	sys.buffalloc
+
+end sub
+
+public function sql_connect(lg as string(20), pw as string(20), db as string(20)) as boolean
+'This public function need for connect to MySql Server. You can call it from any place of your project.
+'"lg" - database login; "pw" - database password; "db" - database name.
+'The function returnes "true" if the connection to server was successful and returnes "false" if the connection failed.
+	
+	dim timeout as word
+	dim seed as string(20)
+	dim lendp as dword
+	dim i, position as byte
+	
+	if lg <> "" then mysql.username = lg
+	if pw <> "" then mysql.password = pw
+	if db <> "" then mysql.db_name = db
+	
+	sock.num = mysql.sql_sock
+	
+	if sock.state <> PL_SST_EST_AOPENED then
+	'If the socket was closed - renew connection
+	
+		sock.connect
+		timeout=sys.timercount+20
+		
+		'Waiting answer or timeout
+		while (sock.rxlen=0) and (sys.timercount<timeout)
+		wend
+		
+		'No answer
+		if sock.rxlen=0 then
+			sql_disconnect()
+			sql_connect=false
+			exit function
+		end if
+		
+		'Data arrived
+		mysql_p.packet_r = sock.getdata(255)
+		sock.rxclear
+		
+		'-----Make data for authorization
+		position=instr(5,mysql_p.packet_r,chr(0),1)+5
+		seed = mid(mysql_p.packet_r,position,8)+right(mysql_p.packet_r,13)
+		'We need a seed for calculating the hash from password
+		mysql_p.num_pack=val(mid(mysql_p.packet_r,4,1))
+		mysql_p.num_pack=mysql_p.num_pack+1
+		'Packets counter. Needed for the protocol
+		mysql_p.flag_s=chr(133)+chr(166)+chr(3)+chr(0)
+		mysql_p.max_size_s=chr(0)+chr(0)+chr(0)+chr(1)
+		'Max size of data packet. Needed for the protocol
+'-------ENCODING. CHANGE IF YOU NEED.----
+		mysql_p.charset_s=chr(08)
+'-------ENCODING. CHANGE IF YOU NEED.----
+		mysql_p.filler_s = ""
+		for i=0 to 22
+			mysql_p.filler_s = mysql_p.filler_s+chr(0)
+		next i
+		
+		'Compose the packet
+		mysql_p.dat_pack_s = mysql_p.flag_s + mysql_p.max_size_s
+			+ mysql_p.charset_s + mysql_p.filler_s + mysql.username + chr(0)
+			+ chr(20) + sql_password(mysql.password,seed)
+
+		lendp = len(mysql_p.dat_pack_s)
+		mysql_p.packet_s = sql_setlen(lendp) + chr(mysql_p.num_pack) + mysql_p.dat_pack_s
+		
+		'Send the packet
+		sock.setdata(mysql_p.packet_s)
+		sock.send
+		
+		'Wait for a reply or timeout
+		timeout=sys.timercount+20
+		while (sock.rxlen=0) and sys.timercount<timeout
+		wend
+		
+		'No reply
+		if sock.rxlen=0 then
+			sql_disconnect()
+			sql_connect=false
+			exit function
+		end if
+		
+		'Data arrived
+		mysql_p.packet_r=sock.getdata(255)
+		sock.rxclear
+		
+		if mid(mysql_p.packet_r,5,1)=chr(255) then
+		'Access denied. Close socket
+			sql_disconnect()
+			sql_connect=false
+			exit function
+		end if
+	end if
+	
+	
+	'Autorization completed or the connection is already established
+	'Select database
+	sql_connect=sql_select_db(db)
+end function
+
+public sub sql_disconnect()
+'The procedure closes an active MySql connection.
+	sock.num=mysql.sql_sock
+	sock.close
+	While sock.statesimple<>PL_SSTS_CLOSED
+	Wend
+end sub
+
+public function sql_select_db(db as string(20)) as boolean
+'The function selects (or changes) the database on the MySql Server. "db" - database name.
+'The function returnes "true" on success, and "false" on failure.
+'You can call this function after sql_connect.
+	dim position as byte
+	dim lendp as dword
+	dim timeout as word
+	
+	'Make a packet for selecting the database
+	sock.num=mysql.sql_sock
+	mysql_p.num_pack = 0
+	mysql_p.dat_pack_s = chr(INIT_DB)+mysql.db_name
+
+	lendp=len(mysql_p.dat_pack_s)
+	mysql_p.packet_s = sql_setlen(lendp)+chr(mysql_p.num_pack)+mysql_p.dat_pack_s
+
+	'Send the packet
+	sock.setdata(mysql_p.packet_s)
+	sock.send
+	
+	'Wait for a reply or timeout
+	timeout=sys.timercount+20
+	while (sock.rxlen=0) and sys.timercount<timeout
+	wend
+	
+	'If no reply
+	if sock.rxlen=0 then
+		sql_disconnect()
+		sql_select_db=false
+		exit function
+	end if
+	
+	'Send data
+	mysql_p.packet_r = sock.getdata(255)
+	sock.rxclear
+	
+	if mid(mysql_p.packet_r,5,1)=chr(0) then
+		sql_select_db=true
+	else
+	'If an error was detected
+		sql_disconnect()
+		position=instr(1,mysql_p.packet_r,"#",1)+5
+		'Error description put in the mysql_p.dat_pack_r
+		mysql_p.dat_pack_r=right(mysql_p.packet_r,len(mysql_p.dat_pack_r)-position)
+		sql_select_db=false
+	end if
+end function
+
+public function sql_query(squery as string) as string
+'This function sends a query to the SQL server and return the results. "Squery" - the string including one or several queries.
+'For Example, "SELECT NOW()" will return current date/time.
+	dim len_v as byte
+	dim len_p, pos as dword
+	dim s,s1 as string
+	dim timeout as word
+	dim lendp as dword
+	dim type_packet as byte
+	
+	'Make a packet
+	sock.num=mysql.sql_sock
+	mysql_p.dat_pack_s = chr(QUERY)+squery
+	lendp=len(mysql_p.dat_pack_s)
+	mysql_p.packet_s = sql_setlen(lendp)+chr(mysql_p.num_pack)+mysql_p.dat_pack_s
+	'Send the packet
+	sock.setdata(mysql_p.packet_s)
+	sock.send
+	
+	'Wait for reply or timeout
+	timeout=sys.timercount+20
+	while (sock.rxlen=0) and sys.timercount<timeout
+	wend
+	
+	'No data?
+	if sock.rxlen=0 then
+		sql_disconnect()
+		sql_query=ERROR_PACKET_REPLY
+		exit function
+	end if
+	
+	'Data came
+	mysql_p.packet_r = sock.getdata(255)
+	sock.rxclear
+
+	type_packet = asc(mid(mysql_p.packet_r,5,1))
+	select case type_packet
+	case OK_PACKET:
+		'Ok Packet
+		sql_query = OK_PACKET_REPLY	
+	case ERROR_PACKET:
+		'Error packet
+		sql_query=ERROR_PACKET_REPLY
+	case EOF_PACKET:
+		'EOF packet
+	case else:
+'		(Result Set Header Packet)  the number of columns
+'		(Field Packets)             column descriptors
+'		(EOF Packet)                marker: end of Field Packets
+'		(Row Data Packets)          row contents
+'		(EOF Packet)                marker: end of Data Packets
+
+'		Our data replaced between EOF packets. Find them.
+		pos=1
+		len_v=0
+		while len_v<>254
+		'Data about DB, table, columns, etc comes next
+			len_p=sql_getlen(mid(mysql_p.packet_r,pos,3))
+			pos=pos+4
+			len_v=asc(mid(mysql_p.packet_r,pos,1))
+			pos=pos+len_p
+		wend
+		
+		'found 1st EOF
+		len_p=sql_getlen(mid(mysql_p.packet_r,pos,3))
+		pos=pos+4
+		len_v=asc(mid(mysql_p.packet_r,pos,1))
+		
+		'next, we should have some data
+		if (len_v=254) then
+		'oops... We found a second EOF so data is null
+			sql_query=""
+		else
+		'ok, reading server reply
+			s=mid(mysql_p.packet_r,pos,len_p)
+			pos=1
+			s1=""
+			while pos<len_p
+				len_v=asc(mid(s,pos,1))
+				pos=pos+1
+				if s1<>"" then
+					s1=s1+REPLY_FILLER+mid(s,pos,len_v)
+				else
+					s1=s1+mid(s,pos,len_v)
+				end if
+				pos=pos+len_v
+			wend
+			sql_query=s1
+		end if
+	end select
+end function
+
+function sql_password(pw as string, seed as string) as string
+'This is a private function which calculates a hash based on the user's password "pw" and a seed
+'(we get "seed" from the first packet sent by the SQL Server).
+	dim hash_stage1, hash_stage2, param as string(20)
+	dim i,res as byte
+	sql_password=""
+	hash_stage1 = sha1(pw,"",SHA1_FINISH,len(pw))
+	hash_stage2 = sha1(hash_stage1,"",SHA1_FINISH,len(hash_stage1))
+	param = sha1(seed+hash_stage2,"",SHA1_FINISH,len(seed)+len(hash_stage2))
+	if len(hash_stage1)=len(param) then
+		for i=1 to len(hash_stage1)
+			res=(asc(mid(param,i,1))) XOR (asc(mid(hash_stage1,i,1)))
+			sql_password=sql_password+chr(res)
+		next i
+	end if
+end function
+
+function sql_setlen (src_len as dword) as string(6)
+'The MySQL protocol needs 3 bytes length of the packets. Length must be represented as the binary type.
+'So this function convertes to the length which we need.
+'This function is used when we make a sending packet.
+	dim s as string (8)
+	
+	s = lhex(src_len)
+	s = right(s,len(s)-2)
+	while len(s)<>6
+		s="0"+s
+	wend
+	sql_setlen=chr(val("&h"+right(s,2)))+chr(val("&h"+mid(s,3,2)))+chr(val("&h"+left(s,2)))
+end function
+
+function sql_getlen (src_len as string(3)) as dword
+'The MySQL protocol needs 3 bytes length of the packets. Length must be represented as the binary type.
+'So this function converts to the length which we need.
+'This function is used when we read the received packet.
+	dim s as string(8)
+	dim s1, s2, s3 as string(4)
+	s1 = hex(asc(right(src_len,1)))
+	s2 = hex(asc(mid(src_len,2,1)))
+	s3 = hex(asc(left(src_len,1)))
+	s = s1+right(s2,len(s2)-2)+right(s3,len(s3)-2)
+	sql_getlen = lval(s)
+end function

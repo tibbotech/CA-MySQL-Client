@@ -1,0 +1,28 @@
+include "global.tbh"
+
+sub on_sys_init()
+	dim s as string
+	
+	net.ip = "10.1.1.127"
+	net.gatewayip = "10.1.1.111"
+	net.netmask = "255.255.255.0"
+	
+	'Initalize MySQL client settings
+	sql_init()
+	'Connect to MySQL server. Login, password and database name are default values
+	if sql_connect("","","") = false then
+		'If error was detected
+		s = "Can't connect to MySQL Server"
+	else
+		'The connection was established. 
+		's = sql_query("SELECT NOW()")
+		
+		s = sql_query("UPDATE gostergeler set tank1=''")
+		
+		'Ok. Now "S" contains current data/time or "ERROR". Check it.
+		if s <> ERROR_PACKET_REPLY then
+			s = "Today is: " + s
+		end if
+	end if
+	
+end sub

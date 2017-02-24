@@ -1,0 +1,26 @@
+[project]
+watch=src_len, request, mysql_p.packet_r, src_len, s, sock.state
+[file1]
+line=0
+cursor=649
+opened=yes
+bookmarks=
+breakpoints=15,28
+[file2]
+line=0
+cursor=26
+opened=yes
+bookmarks=
+breakpoints=
+[file3]
+line=30
+cursor=1978
+opened=active
+bookmarks=
+breakpoints=78,90,97,136,147,157,194,336
+[file4]
+line=0
+cursor=1227
+opened=yes
+bookmarks=
+breakpoints=
